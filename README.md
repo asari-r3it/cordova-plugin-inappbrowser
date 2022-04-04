@@ -1,3 +1,6 @@
+forked from [OutSystems/cordova-plugin-inappbrowser](https://github.com/OutSystems/cordova-plugin-inappbrowser)
+
+
 ---
 title: Inappbrowser
 description: Open an in-app browser window.
