@@ -120,6 +120,8 @@ instance, or the system browser.
     - __useWideViewPort__: Sets whether the WebView should enable support for the "viewport" HTML meta tag or should use a wide viewport. When the value of the setting is `no`, the layout width is always set to the width of the WebView control in device-independent (CSS) pixels. When the value is `yes` and the page contains the viewport meta tag, the value of the width specified in the tag is used. If the page does not contain the tag or does not provide a width, then a wide viewport will be used. (defaults to `yes`).
     - __fullscreen__: Sets whether the InappBrowser WebView is displayed fullscreen or not. In fullscreen mode, the status bar is hidden. Default value is `yes`.
 
+    If an Android page opened in the InAppBrowser uses APIs such as `navigator.mediaDevices.getUserMedia()` for camera or microphone access, the host app must declare the corresponding Android permissions, such as `android.permission.CAMERA` and `android.permission.RECORD_AUDIO`. The plugin will request the runtime permissions and grant or deny the WebView permission request based on the user's response.
+
     iOS supports these additional options:
 
     - __hidden__: set to `yes` to create the browser and load the page, but not show it. The loadstop event fires when loading is complete. Omit or set to `no` (default) to have the browser open and load normally.

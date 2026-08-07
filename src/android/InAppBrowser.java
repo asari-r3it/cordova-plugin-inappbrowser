@@ -20,6 +20,7 @@ package org.apache.cordova.inappbrowser;
 
 import android.annotation.SuppressLint;
 import android.annotation.TargetApi;
+import android.Manifest;
 import android.content.ComponentName;
 import android.content.Context;
 import android.content.Intent;
@@ -51,6 +52,7 @@ import android.webkit.CookieManager;
 import android.webkit.CookieSyncManager;
 import android.webkit.HttpAuthHandler;
 import android.webkit.JavascriptInterface;
+import android.webkit.PermissionRequest;
 import android.webkit.SslErrorHandler;
 import android.webkit.ValueCallback;
 import android.webkit.WebChromeClient;
@@ -73,6 +75,7 @@ import org.apache.cordova.CordovaHttpAuthHandler;
 import org.apache.cordova.CordovaPlugin;
 import org.apache.cordova.CordovaWebView;
 import org.apache.cordova.LOG;
+import org.apache.cordova.PermissionHelper;
 import org.apache.cordova.PluginManager;
 import org.apache.cordova.PluginResult;
 import org.json.JSONException;
@@ -121,6 +124,7 @@ public class InAppBrowser extends CordovaPlugin {
     private static final String FOOTER_COLOR = "footercolor";
     private static final String BEFORELOAD = "beforeload";
     private static final String FULLSCREEN = "fullscreen";
+    private static final int IAB_PERMISSION_REQUEST_CODE = 345;
 
     private static final List customizableOptions = Arrays.asList(CLOSE_BUTTON_CAPTION, TOOLBAR_COLOR, NAVIGATION_COLOR, CLOSE_BUTTON_COLOR, FOOTER_COLOR);
 
@@ -155,6 +159,8 @@ public class InAppBrowser extends CordovaPlugin {
     private boolean fullscreen = true;
     private String[] allowedSchemes;
     private InAppBrowserClient currentClient;
+    private PermissionRequest pendingPermissionRequest;
+    private String[] pendingPermissionRequestResources;
 
     /**
      * Executes the request and returns PluginResult.
@@ -961,6 +967,18 @@ public class InAppBrowser extends CordovaPlugin {
                 inAppWebView.setId(Integer.valueOf(6));
                 // File Chooser Implemented ChromeClient
                 inAppWebView.setWebChromeClient(new InAppChromeClient(thatWebView) {
+                    @TargetApi(Build.VERSION_CODES.LOLLIPOP)
+                    @Override
+                    public void onPermissionRequest(PermissionRequest request) {
+                        handlePermissionRequest(request);
+                    }
+
+                    @TargetApi(Build.VERSION_CODES.LOLLIPOP)
+                    @Override
+                    public void onPermissionRequestCanceled(PermissionRequest request) {
+                        handlePermissionRequestCanceled(request);
+                    }
+
                     // For Android 5.0+
                     public boolean onShowFileChooser (WebView webView, ValueCallback<Uri[]> filePathCallback, WebChromeClient.FileChooserParams fileChooserParams)
                     {
@@ -1116,6 +1134,91 @@ public class InAppBrowser extends CordovaPlugin {
         };
         this.cordova.getActivity().runOnUiThread(runnable);
         return "";
+    }
+
+    @TargetApi(Build.VERSION_CODES.LOLLIPOP)
+    private void handlePermissionRequest(final PermissionRequest request) {
+        if (pendingPermissionRequest != null) {
+            LOG.w(LOG_TAG, "Denying WebView permission request because another request is pending.");
+            request.deny();
+            return;
+        }
+
+        final String[] requestedResources = request.getResources();
+        ArrayList<String> permissions = getPermissionsForRequestedResources(requestedResources);
+        ArrayList<String> permissionsToRequest = new ArrayList<String>();
+
+        for (String permission : permissions) {
+            if (!PermissionHelper.hasPermission(this, permission)) {
+                permissionsToRequest.add(permission);
+            }
+        }
+
+        if (permissionsToRequest.isEmpty()) {
+            request.grant(requestedResources);
+            return;
+        }
+
+        pendingPermissionRequest = request;
+        pendingPermissionRequestResources = requestedResources;
+        PermissionHelper.requestPermissions(this, IAB_PERMISSION_REQUEST_CODE, permissionsToRequest.toArray(new String[permissionsToRequest.size()]));
+    }
+
+    @TargetApi(Build.VERSION_CODES.LOLLIPOP)
+    private void handlePermissionRequestCanceled(PermissionRequest request) {
+        if (request == pendingPermissionRequest) {
+            pendingPermissionRequest = null;
+            pendingPermissionRequestResources = null;
+        }
+    }
+
+    @TargetApi(Build.VERSION_CODES.LOLLIPOP)
+    private ArrayList<String> getPermissionsForRequestedResources(String[] requestedResources) {
+        ArrayList<String> permissions = new ArrayList<String>();
+
+        for (String requestedResource : requestedResources) {
+            if (PermissionRequest.RESOURCE_AUDIO_CAPTURE.equals(requestedResource)) {
+                addPermissionIfNeeded(permissions, Manifest.permission.RECORD_AUDIO);
+            } else if (PermissionRequest.RESOURCE_VIDEO_CAPTURE.equals(requestedResource)) {
+                addPermissionIfNeeded(permissions, Manifest.permission.CAMERA);
+            }
+        }
+
+        return permissions;
+    }
+
+    private void addPermissionIfNeeded(ArrayList<String> permissions, String permission) {
+        if (!permissions.contains(permission)) {
+            permissions.add(permission);
+        }
+    }
+
+    @Override
+    public void onRequestPermissionResult(int requestCode, String[] permissions, int[] grantResults) throws JSONException {
+        if (requestCode != IAB_PERMISSION_REQUEST_CODE) {
+            super.onRequestPermissionResult(requestCode, permissions, grantResults);
+            return;
+        }
+
+        final PermissionRequest request = pendingPermissionRequest;
+        final String[] requestedResources = pendingPermissionRequestResources;
+        pendingPermissionRequest = null;
+        pendingPermissionRequestResources = null;
+
+        if (request == null || requestedResources == null) {
+            return;
+        }
+
+        for (int grantResult : grantResults) {
+            if (grantResult != PackageManager.PERMISSION_GRANTED) {
+                request.deny();
+                return;
+            }
+        }
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
+            request.grant(requestedResources);
+        }
     }
 
     /**

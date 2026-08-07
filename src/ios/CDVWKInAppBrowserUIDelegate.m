@@ -18,6 +18,9 @@
  */
 
 #import "CDVWKInAppBrowserUIDelegate.h"
+#import <AVFoundation/AVFoundation.h>
+
+static NSString* const kIABMediaPermissionDefaultsPrefix = @"CDVWKInAppBrowserMediaPermission.";
 
 @implementation CDVWKInAppBrowserUIDelegate
 
@@ -113,6 +116,154 @@
 
     [[self getViewController] presentViewController:alert animated:YES completion:nil];
 }
+
+#if __IPHONE_OS_VERSION_MAX_ALLOWED >= 150000
+- (void)webView:(WKWebView*)webView
+    requestMediaCapturePermissionForOrigin:(WKSecurityOrigin*)origin
+    initiatedByFrame:(WKFrameInfo*)frame
+    type:(WKMediaCaptureType)type
+    decisionHandler:(void (^)(WKPermissionDecision decision))decisionHandler API_AVAILABLE(ios(15.0))
+{
+    NSString* permissionKey = [self mediaPermissionKeyForOrigin:origin type:type];
+    NSNumber* savedDecision = [[NSUserDefaults standardUserDefaults] objectForKey:permissionKey];
+    if (savedDecision != nil) {
+        decisionHandler([savedDecision boolValue] ? WKPermissionDecisionGrant : WKPermissionDecisionDeny);
+        return;
+    }
+
+    [self requestNativePermissionForMediaCaptureType:type completion:^(BOOL nativeGranted) {
+        dispatch_async(dispatch_get_main_queue(), ^{
+            if (!nativeGranted) {
+                decisionHandler(WKPermissionDecisionDeny);
+                return;
+            }
+
+            [self promptForOrigin:origin type:type completion:^(BOOL originGranted) {
+                [[NSUserDefaults standardUserDefaults] setBool:originGranted forKey:permissionKey];
+                decisionHandler(originGranted ? WKPermissionDecisionGrant : WKPermissionDecisionDeny);
+            }];
+        });
+    }];
+}
+
+- (NSString*)mediaPermissionKeyForOrigin:(WKSecurityOrigin*)origin type:(WKMediaCaptureType)type API_AVAILABLE(ios(15.0))
+{
+    return [NSString stringWithFormat:@"%@%@://%@:%ld.%ld",
+            kIABMediaPermissionDefaultsPrefix,
+            origin.protocol,
+            origin.host,
+            (long)origin.port,
+            (long)type];
+}
+
+- (void)promptForOrigin:(WKSecurityOrigin*)origin type:(WKMediaCaptureType)type completion:(void (^)(BOOL granted))completion API_AVAILABLE(ios(15.0))
+{
+    NSString* message = [NSString stringWithFormat:NSLocalizedString(@"Allow %@ to access %@?", nil),
+                         origin.host,
+                         [self mediaCaptureNameForType:type]];
+    UIAlertController* alert = [UIAlertController alertControllerWithTitle:self.title
+                                                                   message:message
+                                                            preferredStyle:UIAlertControllerStyleAlert];
+    UIAlertAction* allow = [UIAlertAction actionWithTitle:NSLocalizedString(@"Allow", nil)
+                                                    style:UIAlertActionStyleDefault
+                                                  handler:^(UIAlertAction* action) {
+        completion(YES);
+    }];
+    UIAlertAction* deny = [UIAlertAction actionWithTitle:NSLocalizedString(@"Deny", nil)
+                                                   style:UIAlertActionStyleCancel
+                                                 handler:^(UIAlertAction* action) {
+        completion(NO);
+    }];
+
+    [alert addAction:deny];
+    [alert addAction:allow];
+    [[self getViewController] presentViewController:alert animated:YES completion:nil];
+}
+
+- (NSString*)mediaCaptureNameForType:(WKMediaCaptureType)type API_AVAILABLE(ios(15.0))
+{
+    switch (type) {
+        case WKMediaCaptureTypeCamera:
+            return NSLocalizedString(@"the camera", nil);
+        case WKMediaCaptureTypeMicrophone:
+            return NSLocalizedString(@"the microphone", nil);
+        case WKMediaCaptureTypeCameraAndMicrophone:
+            return NSLocalizedString(@"the camera and microphone", nil);
+        default:
+            return NSLocalizedString(@"media devices", nil);
+    }
+}
+
+- (void)requestNativePermissionForMediaCaptureType:(WKMediaCaptureType)type completion:(void (^)(BOOL granted))completion API_AVAILABLE(ios(15.0))
+{
+    BOOL needsCamera = type == WKMediaCaptureTypeCamera || type == WKMediaCaptureTypeCameraAndMicrophone;
+    BOOL needsMicrophone = type == WKMediaCaptureTypeMicrophone || type == WKMediaCaptureTypeCameraAndMicrophone;
+
+    if (!needsCamera && !needsMicrophone) {
+        completion(NO);
+        return;
+    }
+
+    __block BOOL cameraGrantedResult = YES;
+    __block BOOL microphoneGrantedResult = YES;
+    dispatch_group_t group = dispatch_group_create();
+
+    if (needsCamera) {
+        dispatch_group_enter(group);
+        [self requestCameraPermissionWithCompletion:^(BOOL cameraGranted) {
+            cameraGrantedResult = cameraGranted;
+            dispatch_group_leave(group);
+        }];
+    }
+
+    if (needsMicrophone) {
+        dispatch_group_enter(group);
+        [self requestMicrophonePermissionWithCompletion:^(BOOL microphoneGranted) {
+            microphoneGrantedResult = microphoneGranted;
+            dispatch_group_leave(group);
+        }];
+    }
+
+    dispatch_group_notify(group, dispatch_get_main_queue(), ^{
+        completion(cameraGrantedResult && microphoneGrantedResult);
+    });
+}
+
+- (void)requestCameraPermissionWithCompletion:(void (^)(BOOL granted))completion
+{
+    AVAuthorizationStatus status = [AVCaptureDevice authorizationStatusForMediaType:AVMediaTypeVideo];
+    switch (status) {
+        case AVAuthorizationStatusAuthorized:
+            completion(YES);
+            break;
+        case AVAuthorizationStatusNotDetermined:
+            [AVCaptureDevice requestAccessForMediaType:AVMediaTypeVideo completionHandler:completion];
+            break;
+        case AVAuthorizationStatusDenied:
+        case AVAuthorizationStatusRestricted:
+        default:
+            completion(NO);
+            break;
+    }
+}
+
+- (void)requestMicrophonePermissionWithCompletion:(void (^)(BOOL granted))completion
+{
+    AVAudioSessionRecordPermission permission = [[AVAudioSession sharedInstance] recordPermission];
+    switch (permission) {
+        case AVAudioSessionRecordPermissionGranted:
+            completion(YES);
+            break;
+        case AVAudioSessionRecordPermissionUndetermined:
+            [[AVAudioSession sharedInstance] requestRecordPermission:completion];
+            break;
+        case AVAudioSessionRecordPermissionDenied:
+        default:
+            completion(NO);
+            break;
+    }
+}
+#endif
 
 -(UIViewController*) getViewController
 {
