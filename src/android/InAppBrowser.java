@@ -20,9 +20,11 @@ package org.apache.cordova.inappbrowser;
 
 import android.annotation.SuppressLint;
 import android.annotation.TargetApi;
+import android.app.AlertDialog;
 import android.Manifest;
 import android.content.ComponentName;
 import android.content.Context;
+import android.content.DialogInterface;
 import android.content.Intent;
 import android.content.pm.PackageManager;
 import android.content.pm.ResolveInfo;
@@ -95,6 +97,7 @@ public class InAppBrowser extends CordovaPlugin {
 
     private static final String NULL = "null";
     protected static final String LOG_TAG = "InAppBrowser";
+    private AlertDialog httpAuthDialog;
     private static final String SELF = "_self";
     private static final String SYSTEM = "_system";
     private static final String EXIT_EVENT = "exit";
@@ -538,6 +541,9 @@ public class InAppBrowser extends CordovaPlugin {
             @Override
             public void run() {
                 final WebView childView = inAppWebView;
+                if (httpAuthDialog != null) {
+                    httpAuthDialog.cancel();
+                }
                 // The JS protects against multiple calls, so this should happen only when
                 // closeDialog() is called by other native code.
                 if (childView == null) {
@@ -1663,8 +1669,58 @@ public class InAppBrowser extends CordovaPlugin {
                 return;
             }
 
-            // By default handle 401 like we'd normally do!
-            super.onReceivedHttpAuthRequest(view, handler, host, realm);
+            if (cordova.getActivity().isFinishing() || view != inAppWebView) {
+                handler.cancel();
+                return;
+            }
+            if (httpAuthDialog != null) {
+                httpAuthDialog.cancel();
+            }
+
+            LinearLayout fields = new LinearLayout(cordova.getActivity());
+            fields.setOrientation(LinearLayout.VERTICAL);
+            int padding = (int) (24 * view.getResources().getDisplayMetrics().density);
+            fields.setPadding(padding, 0, padding, 0);
+            final EditText username = new EditText(cordova.getActivity());
+            username.setHint("Username");
+            username.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_NORMAL);
+            username.setSingleLine(true);
+            final EditText password = new EditText(cordova.getActivity());
+            password.setHint("Password");
+            password.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_PASSWORD);
+            password.setSingleLine(true);
+            fields.addView(username);
+            fields.addView(password);
+
+            final HttpAuthHandler authHandler = handler;
+            httpAuthDialog = new AlertDialog.Builder(cordova.getActivity())
+                    .setTitle("Sign in")
+                    .setMessage(host + (realm == null || realm.isEmpty() ? "" : "\n" + realm))
+                    .setView(fields)
+                    .setPositiveButton(android.R.string.ok, new DialogInterface.OnClickListener() {
+                        @Override
+                        public void onClick(DialogInterface dialogInterface, int which) {
+                            httpAuthDialog = null;
+                            authHandler.proceed(username.getText().toString(), password.getText().toString());
+                        }
+                    })
+                    .setNegativeButton(android.R.string.cancel, new DialogInterface.OnClickListener() {
+                        @Override
+                        public void onClick(DialogInterface dialogInterface, int which) {
+                            httpAuthDialog = null;
+                            authHandler.cancel();
+                        }
+                    })
+                    .setOnCancelListener(new DialogInterface.OnCancelListener() {
+                        @Override
+                        public void onCancel(DialogInterface dialogInterface) {
+                            httpAuthDialog = null;
+                            authHandler.cancel();
+                        }
+                    })
+                    .create();
+            httpAuthDialog.setCanceledOnTouchOutside(false);
+            httpAuthDialog.show();
         }
     }
 }

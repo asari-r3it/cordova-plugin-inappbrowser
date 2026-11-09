@@ -656,7 +656,75 @@ static CDVWKInAppBrowser* instance = nil;
 
 #pragma mark CDVWKInAppBrowserViewController
 
+@interface CDVWKInAppBrowserViewController ()
+@property (nonatomic, strong) UIAlertController* httpAuthAlert;
+@property (nonatomic, copy) void (^httpAuthCompletion)(NSURLSessionAuthChallengeDisposition, NSURLCredential*);
+@end
+
 @implementation CDVWKInAppBrowserViewController
+
+- (void)finishHttpAuthentication:(NSURLSessionAuthChallengeDisposition)disposition credential:(NSURLCredential*)credential
+{
+    void (^completion)(NSURLSessionAuthChallengeDisposition, NSURLCredential*) = self.httpAuthCompletion;
+    UIAlertController* alert = self.httpAuthAlert;
+    self.httpAuthCompletion = nil;
+    self.httpAuthAlert = nil;
+    if (completion) {
+        // Finish dismissing before retrying: a rejected credential may immediately
+        // trigger a new challenge that needs to present another prompt.
+        if (alert.presentingViewController) {
+            [alert dismissViewControllerAnimated:NO completion:^{
+                completion(disposition, credential);
+            }];
+        } else {
+            completion(disposition, credential);
+        }
+    }
+}
+
+- (void)webView:(WKWebView*)webView didReceiveAuthenticationChallenge:(NSURLAuthenticationChallenge*)challenge
+    completionHandler:(void (^)(NSURLSessionAuthChallengeDisposition, NSURLCredential*))completionHandler
+{
+    if (![challenge.protectionSpace.authenticationMethod isEqualToString:NSURLAuthenticationMethodHTTPBasic]) {
+        completionHandler(NSURLSessionAuthChallengePerformDefaultHandling, nil);
+        return;
+    }
+    // A hidden browser or another modal cannot present an authentication prompt.
+    if (!self.view.window || self.presentedViewController || self.httpAuthCompletion) {
+        completionHandler(NSURLSessionAuthChallengeCancelAuthenticationChallenge, nil);
+        return;
+    }
+
+    NSURLProtectionSpace* space = challenge.protectionSpace;
+    NSString* message = [NSString stringWithFormat:@"%@://%@:%ld\n%@",
+                         space.protocol, space.host, (long)space.port, space.realm ?: @""];
+    UIAlertController* alert = [UIAlertController alertControllerWithTitle:NSLocalizedString(@"Sign in", nil)
+        message:message preferredStyle:UIAlertControllerStyleAlert];
+    [alert addTextFieldWithConfigurationHandler:^(UITextField* field) {
+        field.placeholder = NSLocalizedString(@"Username", nil);
+        field.autocapitalizationType = UITextAutocapitalizationTypeNone;
+        field.autocorrectionType = UITextAutocorrectionTypeNo;
+    }];
+    [alert addTextFieldWithConfigurationHandler:^(UITextField* field) {
+        field.placeholder = NSLocalizedString(@"Password", nil);
+        field.secureTextEntry = YES;
+    }];
+    __weak CDVWKInAppBrowserViewController* weakSelf = self;
+    [alert addAction:[UIAlertAction actionWithTitle:NSLocalizedString(@"Cancel", nil)
+        style:UIAlertActionStyleCancel handler:^(UIAlertAction* action) {
+            [weakSelf finishHttpAuthentication:NSURLSessionAuthChallengeCancelAuthenticationChallenge credential:nil];
+        }]];
+    [alert addAction:[UIAlertAction actionWithTitle:NSLocalizedString(@"OK", nil)
+        style:UIAlertActionStyleDefault handler:^(UIAlertAction* action) {
+            UIAlertController* prompt = weakSelf.httpAuthAlert;
+            NSURLCredential* credential = [NSURLCredential credentialWithUser:prompt.textFields[0].text ?: @""
+                password:prompt.textFields[1].text ?: @"" persistence:NSURLCredentialPersistenceNone];
+            [weakSelf finishHttpAuthentication:NSURLSessionAuthChallengeUseCredential credential:credential];
+        }]];
+    self.httpAuthCompletion = completionHandler;
+    self.httpAuthAlert = alert;
+    [self presentViewController:alert animated:YES completion:nil];
+}
 
 @synthesize currentURL;
 
@@ -1035,6 +1103,7 @@ BOOL isExiting = FALSE;
 
 - (void)close
 {
+    [self finishHttpAuthentication:NSURLSessionAuthChallengeCancelAuthenticationChallenge credential:nil];
     self.currentURL = nil;
     
     __weak UIViewController* weakSelf = self;
